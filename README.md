@@ -44,9 +44,3 @@ VRChat SDK・NDMF・Modular Avatarへの依存はありません。撮影する�
 - 元のシーンを変更しないため、アバター外部のTransformを動かすPhysBone・VRC Constraintはエラーにします。アバター外部を参照するConstraintの追従元・Colliderは、撮影用の複製に含まれません。
 - ルートのスケールはXYZ共通の正の値が必要です。顔の自動画角は初期値なので、アバターに合わせて調整してください。
 
-## 開発・検証
-
-本体は`Editor`、アバター素材に依存しないパッケージテストは`Tests/Editor`にあります。
-開発プロジェクトのChiffonを使う描画・姿勢・保存テストは、パッケージ外の`Assets/Tests/TakePhotoAvatar`にあります。
-
-ローカルパッケージとして導入した際にパッケージテストを実行する場合は、プロジェクトのテスト対象パッケージ（`testables`）へ`com.gokoukotori.take-photo-avatar`を含めてください。
