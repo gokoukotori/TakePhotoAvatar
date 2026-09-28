@@ -19,6 +19,10 @@ namespace TakePhotoAvatar
         private Button previewButton;
         private Button saveButton;
         private Button revealButton;
+        private bool isChangingPlayMode;
+
+        private bool IsChangingPlayMode => isChangingPlayMode ||
+            EditorApplication.isPlaying != EditorApplication.isPlayingOrWillChangePlaymode;
 
         [MenuItem("Tools/Gokoukotori/Take Photo Avatar/Aポーズ・顔アップ撮影ツール")]
         public static void Open()
@@ -49,7 +53,7 @@ namespace TakePhotoAvatar
             var heading = new Label("Aポーズ・顔アップ撮影ツール");
             heading.AddToClassList("heading");
             scroll.Add(heading);
-            scroll.Add(new HelpBox("HumanoidのPrefabまたはシーン上のルートを指定します。現在の衣装・表情を基に撮影します。ビルド時の衣装加工や、表情アニメーション・物理挙動は再現しません。", HelpBoxMessageType.Info));
+            scroll.Add(new HelpBox("HumanoidのPrefabまたはシーン上のルートを指定します。プレイ中の衣装・表情を撮影する場合は、Hierarchyの実行中アバターを指定してください。どちらのモードでも腕を指定角度に調整します。撮影用の複製ではアニメーション・物理挙動を再実行しません。", HelpBoxMessageType.Info));
             var avatarField = new ObjectField("アバター") { name = "avatar", objectType = typeof(GameObject), allowSceneObjects = true, value = avatar };
             avatarField.RegisterValueChangedCallback(e => { avatar = (GameObject)e.newValue; Invalidate(); });
             scroll.Add(avatarField);
@@ -138,7 +142,12 @@ namespace TakePhotoAvatar
             ClearPreviews();
         }
 
-        private void OnPlayModeChanged(PlayModeStateChange state) => Invalidate();
+        private void OnPlayModeChanged(PlayModeStateChange state)
+        {
+            isChangingPlayMode = state == PlayModeStateChange.ExitingEditMode ||
+                state == PlayModeStateChange.ExitingPlayMode;
+            Invalidate();
+        }
 
         private void AddSlider(VisualElement parent, string label, string name, float value, float min, float max, Action<float> set)
         {
@@ -151,7 +160,7 @@ namespace TakePhotoAvatar
         {
             ClearPreviews();
             string error = AvatarCapture.ValidateAvatar(avatar);
-            if (EditorApplication.isPlayingOrWillChangePlaymode) error = "撮影は再生モードを終了してから行ってください。";
+            if (IsChangingPlayMode) error = "モードの切り替えが完了してから撮影してください。";
             previewButton?.SetEnabled(error == null);
             saveButton?.SetEnabled(error == null);
             if (status == null) return;
@@ -177,7 +186,7 @@ namespace TakePhotoAvatar
 
         private void RunCapture(Action<AvatarCapture> action)
         {
-            if (EditorApplication.isPlayingOrWillChangePlaymode) { Invalidate(); return; }
+            if (IsChangingPlayMode) { Invalidate(); return; }
             try
             {
                 using (var capture = new AvatarCapture(avatar, settings)) action(capture);
