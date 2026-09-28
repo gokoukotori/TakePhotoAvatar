@@ -1,0 +1,59 @@
+name: Build Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-release:
+    name: build-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read package metadata
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          package_name="$(jq -r '.name // empty' package.json)"
+          package_version="$(jq -r '.version // empty' package.json)"
+
+          if [[ -z "$package_name" || -z "$package_version" ]]; then
+            echo "package.json must define both name and version." >&2
+            exit 1
+          fi
+
+          echo "name=$package_name" >> "$GITHUB_OUTPUT"
+          echo "version=$package_version" >> "$GITHUB_OUTPUT"
+          echo "zip_file=${package_name}-${package_version}.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Create VPM package zip
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          package_dir="$RUNNER_TEMP/vpm-package"
+          rm -rf "$package_dir"
+          mkdir -p "$package_dir"
+
+          git archive --format=tar HEAD | tar -x -C "$package_dir"
+          rm -rf "$package_dir/.github"
+
+          (
+            cd "$package_dir"
+            zip -r "$GITHUB_WORKSPACE/${{ steps.package.outputs.zip_file }}" .
+          )
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.package.outputs.version }}
+          name: ${{ steps.package.outputs.version }}
+          files: |
+            ${{ steps.package.outputs.zip_file }}
+            package.json
