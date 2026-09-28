@@ -1,0 +1,5 @@
+{
+  "name": "TakePhotoAvatar.Editor",
+  "rootNamespace": "TakePhotoAvatar",
+  "includePlatforms": ["Editor"]
+}

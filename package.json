@@ -1,0 +1,19 @@
+{
+  "name": "com.gokoukotori.take-photo-avatar",
+  "version": "0.1.0",
+  "displayName": "Take Photo Avatar",
+  "description": "Humanoidアバターの腕をAスタンスにして、顔アップと三面図をPNG保存するUnity Editorツールです。",
+  "unity": "2022.3",
+  "author": {
+    "name": "gokoukotori"
+  },
+  "keywords": ["avatar", "humanoid", "screenshot", "editor"],
+  "dependencies": {
+    "com.unity.modules.animation": "1.0.0",
+    "com.unity.modules.cloth": "1.0.0",
+    "com.unity.modules.imageconversion": "1.0.0",
+    "com.unity.modules.jsonserialize": "1.0.0",
+    "com.unity.modules.particlesystem": "1.0.0",
+    "com.unity.modules.uielements": "1.0.0"
+  }
+}

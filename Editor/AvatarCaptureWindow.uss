@@ -1,0 +1,8 @@
+.capture-panel { padding: 12px; flex-grow: 1; }
+.heading { font-size: 18px; -unity-font-style: bold; margin-bottom: 10px; }
+.row { flex-direction: row; margin-top: 6px; margin-bottom: 6px; }
+.grow { flex-grow: 1; }
+.preview-grid { flex-direction: row; flex-wrap: wrap; margin-top: 8px; }
+.preview-cell { width: 50%; padding: 4px; }
+.preview-image { height: 220px; background-color: rgb(35, 35, 35); }
+#outputHint { white-space: normal; margin-top: 6px; margin-bottom: 6px; }
