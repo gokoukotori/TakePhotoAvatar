@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading;
 using UnityEditor;
 using UnityEditor.UIElements;
 using UnityEngine;
@@ -20,6 +21,8 @@ namespace TakePhotoAvatar
         private Button saveButton;
         private Button revealButton;
         private bool isChangingPlayMode;
+        private CancellationTokenSource captureCancellation;
+        private AvatarCapture activeCapture;
 
         private bool IsChangingPlayMode => isChangingPlayMode ||
             EditorApplication.isPlaying != EditorApplication.isPlayingOrWillChangePlaymode;
@@ -53,7 +56,7 @@ namespace TakePhotoAvatar
             var heading = new Label("Aポーズ・顔アップ撮影ツール");
             heading.AddToClassList("heading");
             scroll.Add(heading);
-            scroll.Add(new HelpBox("HumanoidのPrefabまたはシーン上のルートを指定します。プレイ中の衣装・表情を撮影する場合は、Hierarchyの実行中アバターを指定してください。どちらのモードでも腕を指定角度に調整します。撮影用の複製ではアニメーション・物理挙動を再実行しません。", HelpBoxMessageType.Info));
+            scroll.Add(new HelpBox("HumanoidのPrefabまたはシーン上のルートを指定します。プレイ中の衣装・表情を撮影する場合は、Hierarchyの実行中アバターを指定してください。腕を指定角度に調整し、プレイ中はConstraint・PhysBoneを約1秒動かしてから撮影します。", HelpBoxMessageType.Info));
             var avatarField = new ObjectField("アバター") { name = "avatar", objectType = typeof(GameObject), allowSceneObjects = true, value = avatar };
             avatarField.RegisterValueChangedCallback(e => { avatar = (GameObject)e.newValue; Invalidate(); });
             scroll.Add(avatarField);
@@ -79,14 +82,14 @@ namespace TakePhotoAvatar
             scroll.Add(transparent);
             scroll.Add(color);
             var resolution = new PopupField<string>("画像サイズ", new List<string> { "512", "1024", "2048" }, settings.resolution.ToString()) { name = "resolution" };
-            resolution.RegisterValueChangedCallback(e => settings.resolution = int.Parse(e.newValue));
+            resolution.RegisterValueChangedCallback(e => { settings.resolution = int.Parse(e.newValue); Invalidate(); });
             scroll.Add(resolution);
 
             var folderRow = new VisualElement();
             folderRow.AddToClassList("row");
             var folder = new TextField("保存先") { name = "outputDirectory", value = settings.outputDirectory, tooltip = "相対パスはこのUnityプロジェクトを基準にします。" };
             folder.AddToClassList("grow");
-            folder.RegisterValueChangedCallback(e => settings.outputDirectory = e.newValue);
+            folder.RegisterValueChangedCallback(e => { settings.outputDirectory = e.newValue; Invalidate(); });
             folderRow.Add(folder);
             folderRow.Add(new Button(() =>
             {
@@ -139,6 +142,7 @@ namespace TakePhotoAvatar
         private void OnDisable()
         {
             EditorApplication.playModeStateChanged -= OnPlayModeChanged;
+            CancelCapture();
             ClearPreviews();
         }
 
@@ -158,6 +162,7 @@ namespace TakePhotoAvatar
 
         private void Invalidate()
         {
+            CancelCapture();
             ClearPreviews();
             string error = AvatarCapture.ValidateAvatar(avatar);
             if (IsChangingPlayMode) error = "モードの切り替えが完了してから撮影してください。";
@@ -184,13 +189,27 @@ namespace TakePhotoAvatar
             });
         }
 
-        private void RunCapture(Action<AvatarCapture> action)
+        private async void RunCapture(Action<AvatarCapture> action)
         {
+            if (captureCancellation != null) return;
             if (IsChangingPlayMode) { Invalidate(); return; }
+            var cancellation = new CancellationTokenSource();
+            captureCancellation = cancellation;
             try
             {
-                using (var capture = new AvatarCapture(avatar, settings)) action(capture);
+                previewButton.SetEnabled(false);
+                saveButton.SetEnabled(false);
+                status.text = "撮影を準備しています。Constraint・PhysBoneの更新を待機中…";
+                status.messageType = HelpBoxMessageType.Info;
+                using (var capture = new AvatarCapture(avatar, settings))
+                {
+                    activeCapture = capture;
+                    await capture.PrepareAsync(cancellation.Token);
+                    cancellation.Token.ThrowIfCancellationRequested();
+                    action(capture);
+                }
             }
+            catch (OperationCanceledException) { }
             catch (Exception exception)
             {
                 ClearPreviews();
@@ -198,6 +217,26 @@ namespace TakePhotoAvatar
                 status.messageType = HelpBoxMessageType.Error;
                 Debug.LogException(exception);
             }
+            finally
+            {
+                if (captureCancellation == cancellation)
+                {
+                    captureCancellation = null;
+                    activeCapture = null;
+                    bool enabled = !IsChangingPlayMode && AvatarCapture.ValidateAvatar(avatar) == null;
+                    previewButton?.SetEnabled(enabled);
+                    saveButton?.SetEnabled(enabled);
+                }
+                cancellation.Dispose();
+            }
+        }
+
+        private void CancelCapture()
+        {
+            captureCancellation?.Cancel();
+            captureCancellation = null;
+            activeCapture?.Dispose();
+            activeCapture = null;
         }
 
         private void UpdatePreviews(AvatarCapture capture)

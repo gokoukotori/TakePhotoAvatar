@@ -1,6 +1,8 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -46,6 +48,11 @@ namespace TakePhotoAvatar
     {
         private Scene scene;
         private Camera camera;
+        private Scene simulationScene;
+        private GameObject container;
+        private bool needsSimulation;
+        private Renderer[] simulationRenderers;
+        private bool[] renderingOff;
         private Vector3 faceCenter;
         private float faceSize;
         private readonly CaptureSettings settings;
@@ -76,9 +83,15 @@ namespace TakePhotoAvatar
             scene = EditorSceneManager.NewPreviewScene();
             try
             {
-                var container = new GameObject("TakePhotoAvatar Preview");
+                container = new GameObject("TakePhotoAvatar Preview");
                 SceneManager.MoveGameObjectToScene(container, scene);
                 container.SetActive(false);
+                needsSimulation = Application.isPlaying;
+                if (needsSimulation)
+                {
+                    simulationScene = SceneManager.CreateScene("TakePhotoAvatar Simulation " + Guid.NewGuid().ToString("N"));
+                    SceneManager.MoveGameObjectToScene(container, simulationScene);
+                }
                 Avatar = Object.Instantiate(source, container.transform, false);
                 Avatar.name = source.name;
                 Avatar.transform.SetLocalPositionAndRotation(Vector3.zero, Quaternion.identity);
@@ -89,16 +102,27 @@ namespace TakePhotoAvatar
                     if (GameObjectUtility.GetMonoBehavioursWithMissingScriptCount(transform.gameObject) != 0)
                         throw new InvalidOperationException("Missing Scriptがあります: " + transform.name);
                 }
-                foreach (Behaviour behaviour in Avatar.GetComponentsInChildren<Behaviour>(true)) behaviour.enabled = false;
+                foreach (Behaviour behaviour in Avatar.GetComponentsInChildren<Behaviour>(true))
+                {
+                    if (!needsSimulation || !IsCaptureDynamics(behaviour)) behaviour.enabled = false;
+                    else if (behaviour.enabled) ValidateDynamicsTarget(behaviour);
+                }
                 foreach (Component component in Avatar.GetComponentsInChildren<Component>(true))
-                    if (component is IConstraint constraint) constraint.constraintActive = false;
-                foreach (Cloth cloth in Avatar.GetComponentsInChildren<Cloth>(true)) cloth.enabled = false;
+                    if (!needsSimulation && component is IConstraint constraint) constraint.constraintActive = false;
+                foreach (Cloth cloth in Avatar.GetComponentsInChildren<Cloth>(true))
+                    if (!needsSimulation) cloth.enabled = false;
                 foreach (ParticleSystem particle in Avatar.GetComponentsInChildren<ParticleSystem>(true))
                     particle.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
                 Avatar.SetActive(true);
-                container.SetActive(true);
                 Animator animator = Avatar.GetComponent<Animator>();
                 LowerArms(animator, settings.armAngle);
+                if (needsSimulation)
+                {
+                    simulationRenderers = Avatar.GetComponentsInChildren<Renderer>(true);
+                    renderingOff = simulationRenderers.Select(r => r.forceRenderingOff).ToArray();
+                    foreach (Renderer renderer in simulationRenderers) renderer.forceRenderingOff = true;
+                }
+                container.SetActive(true);
 
                 Renderer[] renderers = Avatar.GetComponentsInChildren<Renderer>()
                     .Where(r => r.enabled && r.gameObject.activeInHierarchy && !(r is ParticleSystemRenderer) && !(r is TrailRenderer)).ToArray();
@@ -106,14 +130,7 @@ namespace TakePhotoAvatar
                 foreach (Material material in renderers.SelectMany(r => r.sharedMaterials).Distinct())
                     if (material == null || material.shader == null || !material.shader.isSupported || ShaderUtil.ShaderHasError(material.shader))
                         throw new InvalidOperationException("マテリアルまたはシェーダーに問題があります: " + (material == null ? "未設定" : material.name));
-                Bounds = Measure(renderers);
-                Transform head = Bone(animator, HumanBodyBones.Head);
-                Transform leftEye = animator.GetBoneTransform(HumanBodyBones.LeftEye);
-                Transform rightEye = animator.GetBoneTransform(HumanBodyBones.RightEye);
-                faceSize = Bounds.size.y * (0.175f / 1.1974f);
-                faceCenter = head.position + Vector3.up * (faceSize * 0.49f);
-                if (leftEye != null && rightEye != null)
-                    faceCenter = (leftEye.position + rightEye.position) * 0.5f + Vector3.up * (faceSize / 7);
+                UpdateFraming();
 
                 var cameraObject = new GameObject("Capture Camera");
                 SceneManager.MoveGameObjectToScene(cameraObject, scene);
@@ -136,6 +153,7 @@ namespace TakePhotoAvatar
         public Texture2D Render(CaptureView view, int resolution)
         {
             if (camera == null) throw new ObjectDisposedException(nameof(AvatarCapture));
+            if (needsSimulation) throw new InvalidOperationException("物理挙動の待機が完了していません。PrepareAsyncを待機してください。");
             if (resolution < 64 || resolution > 2048) throw new ArgumentOutOfRangeException(nameof(resolution));
             Vector3 target = Bounds.center;
             camera.orthographicSize = Mathf.Max(Bounds.extents.y, Mathf.Max(Bounds.extents.x, Bounds.extents.z)) * settings.margin;
@@ -265,6 +283,77 @@ namespace TakePhotoAvatar
             LowerArm(animator, HumanBodyBones.RightUpperArm, HumanBodyBones.RightLowerArm, angle);
         }
 
+        private static bool IsCaptureDynamics(Behaviour behaviour)
+        {
+            if (behaviour is IConstraint) return true;
+            // Optional SDK support without a compile-time VRChat dependency.
+            for (Type type = behaviour.GetType(); type != null; type = type.BaseType)
+                if (type.FullName == "VRC.SDK3.Dynamics.PhysBone.Components.VRCPhysBone" ||
+                    type.FullName == "VRC.SDK3.Dynamics.PhysBone.Components.VRCPhysBoneCollider" ||
+                    type.FullName == "VRC.Dynamics.VRCConstraintBase") return true;
+            return false;
+        }
+
+        private void ValidateDynamicsTarget(Behaviour behaviour)
+        {
+            if (behaviour is IConstraint) return;
+            using (var serialized = new SerializedObject(behaviour))
+            {
+                foreach (string name in new[] { "rootTransform", "TargetTransform" })
+                {
+                    var property = serialized.FindProperty(name);
+                    if (property == null || property.propertyType != SerializedPropertyType.ObjectReference) continue;
+                    var target = property.objectReferenceValue as Transform;
+                    if (target != null && !target.IsChildOf(Avatar.transform))
+                        throw new InvalidOperationException("アバター外部を動かすConstraint・PhysBoneは撮影できません: " + behaviour.name);
+                }
+            }
+        }
+
+        public async Task PrepareAsync(CancellationToken cancellationToken = default)
+        {
+            if (!needsSimulation) return;
+            double start = EditorApplication.timeSinceStartup;
+            int firstFrame = Time.frameCount;
+            while (EditorApplication.timeSinceStartup - start < 1 || Time.frameCount - firstFrame < 2)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (Avatar == null) throw new ObjectDisposedException(nameof(AvatarCapture));
+                if (!Application.isPlaying) throw new OperationCanceledException();
+                if (EditorApplication.isPaused || Time.timeScale <= 0)
+                    throw new InvalidOperationException("Constraint・PhysBoneの更新のため、一時停止を解除して撮影してください。");
+                if (EditorApplication.timeSinceStartup - start > 10)
+                    throw new InvalidOperationException("物理挙動の更新を待機できませんでした。");
+                await Task.Delay(16, cancellationToken);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            // Snapshot all views in one frame after the normal player loop has evaluated dynamics.
+            foreach (Behaviour behaviour in Avatar.GetComponentsInChildren<Behaviour>(true)) behaviour.enabled = false;
+            foreach (Component component in Avatar.GetComponentsInChildren<Component>(true))
+                if (component is IConstraint constraint) constraint.constraintActive = false;
+            SceneManager.MoveGameObjectToScene(container, scene);
+            SceneManager.UnloadSceneAsync(simulationScene);
+            simulationScene = default;
+            for (int i = 0; i < simulationRenderers.Length; i++)
+                if (simulationRenderers[i] != null) simulationRenderers[i].forceRenderingOff = renderingOff[i];
+            needsSimulation = false;
+            UpdateFraming();
+        }
+
+        private void UpdateFraming()
+        {
+            Bounds = Measure(Avatar.GetComponentsInChildren<Renderer>()
+                .Where(r => r.enabled && !(r is ParticleSystemRenderer) && !(r is TrailRenderer)).ToArray());
+            Animator animator = Avatar.GetComponent<Animator>();
+            Transform head = Bone(animator, HumanBodyBones.Head);
+            Transform leftEye = animator.GetBoneTransform(HumanBodyBones.LeftEye);
+            Transform rightEye = animator.GetBoneTransform(HumanBodyBones.RightEye);
+            faceSize = Bounds.size.y * (0.175f / 1.1974f);
+            faceCenter = head.position + Vector3.up * (faceSize * 0.49f);
+            if (leftEye != null && rightEye != null)
+                faceCenter = (leftEye.position + rightEye.position) * 0.5f + Vector3.up * (faceSize / 7);
+        }
+
         private static void LowerArm(Animator animator, HumanBodyBones upperBone, HumanBodyBones elbowBone, float angle)
         {
             Transform upper = Bone(animator, upperBone);
@@ -329,6 +418,10 @@ namespace TakePhotoAvatar
 
         public void Dispose()
         {
+            if (container != null) Object.DestroyImmediate(container);
+            container = null;
+            if (simulationScene.IsValid() && simulationScene.isLoaded) SceneManager.UnloadSceneAsync(simulationScene);
+            simulationScene = default;
             if (scene.IsValid()) EditorSceneManager.ClosePreviewScene(scene);
             scene = default;
             camera = null;
