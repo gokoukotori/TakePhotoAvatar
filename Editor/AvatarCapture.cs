@@ -387,7 +387,8 @@ namespace TakePhotoAvatar
                     var mesh = new Mesh();
                     try
                     {
-                        skinned.BakeMesh(mesh);
+                        // Compensate for renderer scale so TransformPoint applies it only once.
+                        skinned.BakeMesh(mesh, true);
                         foreach (Vector3 vertex in mesh.vertices)
                         {
                             Vector3 point = skinned.transform.TransformPoint(vertex);
